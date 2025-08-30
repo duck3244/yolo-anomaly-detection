@@ -1,0 +1,53 @@
+{
+  "system": {
+    "device": "cpu",
+    "model_path": "yolov8n.pt",
+    "confidence_threshold": 0.5,
+    "log_level": "INFO",
+    "use_optimized_detector": false
+  },
+  "tracking": {
+    "max_disappeared": 10,
+    "max_distance": 100,
+    "feature_history_length": 30,
+    "use_advanced_tracking": false
+  },
+  "feature_extraction": {
+    "use_advanced_features": false,
+    "window_size": 30,
+    "include_interaction_features": false,
+    "include_context_features": false
+  },
+  "anomaly_detection": {
+    "algorithm": "isolation_forest",
+    "window_size": 30,
+    "contamination": 0.1,
+    "use_ensemble": false,
+    "use_realtime": true,
+    "use_adaptive": false
+  },
+  "display": {
+    "show_id": true,
+    "show_score": true,
+    "show_bbox": true,
+    "show_confidence": true,
+    "anomaly_color": [0, 0, 255],
+    "normal_color": [0, 255, 0],
+    "font_scale": 0.6,
+    "thickness": 2
+  },
+  "output": {
+    "save_video": true,
+    "save_logs": true,
+    "save_screenshots": false,
+    "output_directory": "output",
+    "log_directory": "logs"
+  },
+  "performance": {
+    "frame_skip": 1,
+    "batch_size": 1,
+    "use_multithreading": false,
+    "roi_enabled": false,
+    "roi_boxes": []
+  }
+}
