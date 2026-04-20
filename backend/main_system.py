@@ -13,32 +13,35 @@ import logging
 from pathlib import Path
 from collections import deque
 
+# 모듈 로딩 전용 부트스트랩 로거 (파일 핸들러 설정 전)
+_bootstrap_logger = logging.getLogger(__name__)
+
 # 모듈 임포트
 try:
     from yolo_detector import YOLODetector, OptimizedYOLODetector
-except ImportError:
-    print("Warning: yolo_detector 모듈을 찾을 수 없습니다.")
+except ImportError as e:
+    _bootstrap_logger.warning(f"yolo_detector 모듈을 찾을 수 없습니다: {e}")
     YOLODetector = None
     OptimizedYOLODetector = None
 
 try:
     from person_tracker import PersonTracker, AdvancedPersonTracker
-except ImportError:
-    print("Warning: person_tracker 모듈을 찾을 수 없습니다.")
+except ImportError as e:
+    _bootstrap_logger.warning(f"person_tracker 모듈을 찾을 수 없습니다: {e}")
     PersonTracker = None
     AdvancedPersonTracker = None
 
 try:
     from feature_extractor import FeatureExtractor, AdvancedFeatureExtractor
-except ImportError:
-    print("Warning: feature_extractor 모듈을 찾을 수 없습니다.")
+except ImportError as e:
+    _bootstrap_logger.warning(f"feature_extractor 모듈을 찾을 수 없습니다: {e}")
     FeatureExtractor = None
     AdvancedFeatureExtractor = None
 
 try:
     from anomaly_detector import AnomalyDetector, EnsembleAnomalyDetector, RealTimeAnomalyDetector
-except ImportError:
-    print("Warning: anomaly_detector 모듈을 찾을 수 없습니다.")
+except ImportError as e:
+    _bootstrap_logger.warning(f"anomaly_detector 모듈을 찾을 수 없습니다: {e}")
     AnomalyDetector = None
     EnsembleAnomalyDetector = None
     RealTimeAnomalyDetector = None
@@ -59,7 +62,7 @@ class SimpleDetector:
         h, w = frame.shape[:2]
         detections = []
 
-        if self.prev_frame is not None:
+        if self.prev_frame is not None and self.prev_frame.shape == frame.shape:
             # 배경 차분
             gray_current = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_prev = cv2.cvtColor(self.prev_frame, cv2.COLOR_BGR2GRAY)
@@ -85,18 +88,6 @@ class SimpleDetector:
                             'class_id': 0,
                             'class_name': 'person'
                         })
-
-        # 검출이 없으면 기본 사람 하나 생성
-        if len(detections) == 0:
-            center_x = w // 2
-            center_y = h // 2
-            width, height = 60, 120
-            detections.append({
-                'bbox': [center_x - width//2, center_y - height//2, center_x + width//2, center_y + height//2],
-                'confidence': 0.6,
-                'class_id': 0,
-                'class_name': 'person'
-            })
 
         self.prev_frame = frame.copy()
         return detections
@@ -183,11 +174,11 @@ class SimpleTracker:
 class SimpleFeatureExtractor:
     """간단한 특징 추출기"""
 
-    def extract_comprehensive_features(self, person_id, bbox, prev_bbox, frame_shape, frame_number=0, fps=30):
-        """종합 특징 추출"""
-        features = []
+    FEATURE_DIM = 9  # [norm_w, norm_h, norm_area, aspect, cx, cy, dx, dy, velocity]
 
-        # 기본 박스 특징
+    def extract_comprehensive_features(self, person_id, bbox, prev_bbox, frame_shape,
+                                       frame_number=0, fps=30):
+        """종합 특징 추출 (결정적, 고정 차원)"""
         width = bbox[2] - bbox[0]
         height = bbox[3] - bbox[1]
         area = width * height
@@ -198,31 +189,27 @@ class SimpleFeatureExtractor:
         norm_height = height / frame_shape[0]
         norm_area = area / (frame_shape[0] * frame_shape[1])
 
-        features.extend([norm_width, norm_height, norm_area, aspect_ratio])
-
         # 위치 특징
         center_x = (bbox[0] + bbox[2]) / (2 * frame_shape[1])
         center_y = (bbox[1] + bbox[3]) / (2 * frame_shape[0])
-        features.extend([center_x, center_y])
 
         # 모션 특징
         if prev_bbox is not None:
             prev_center_x = (prev_bbox[0] + prev_bbox[2]) / (2 * frame_shape[1])
             prev_center_y = (prev_bbox[1] + prev_bbox[3]) / (2 * frame_shape[0])
-
             dx = center_x - prev_center_x
             dy = center_y - prev_center_y
-            velocity = np.sqrt(dx**2 + dy**2)
-
-            features.extend([dx, dy, velocity])
+            velocity = np.sqrt(dx ** 2 + dy ** 2)
         else:
-            features.extend([0.0, 0.0, 0.0])
+            dx = dy = velocity = 0.0
 
-        # 추가 랜덤 특징으로 차원 맞추기
-        while len(features) < 20:
-            features.append(np.random.normal(0, 0.1))
+        features = np.array([
+            norm_width, norm_height, norm_area, aspect_ratio,
+            center_x, center_y,
+            dx, dy, velocity,
+        ], dtype=np.float32)
 
-        return np.array(features[:20], dtype=np.float32)
+        return features
 
     def cleanup_old_histories(self, active_person_ids):
         pass
@@ -231,14 +218,21 @@ class SimpleFeatureExtractor:
 class SimpleAnomalyDetector:
     """간단한 이상 검출기"""
 
-    def __init__(self, window_size=30, contamination=0.1, algorithm='simple'):
+    def __init__(self, window_size=30, contamination=0.1, algorithm='simple',
+                 z_score_threshold=0.7, z_score_divisor=3.0,
+                 min_training_samples=50, validation_split=0.2):
         self.window_size = window_size
         self.contamination = contamination
         self.algorithm = algorithm
+        self.z_score_threshold = z_score_threshold
+        self.z_score_divisor = z_score_divisor
+        self.min_training_samples = min_training_samples
+        self.validation_split = validation_split
         self.is_trained = False
         self.normal_mean = None
         self.normal_std = None
         self.training_features = []
+        self.training_metrics = {}
 
     def add_training_features(self, features):
         """훈련 특징 추가"""
@@ -248,28 +242,67 @@ class SimpleAnomalyDetector:
             self.training_features.append(features)
 
     def train(self):
-        """모델 훈련"""
-        if len(self.training_features) < 50:
+        """모델 훈련 (train/val split 포함)"""
+        logger = logging.getLogger(__name__)
+
+        if len(self.training_features) < self.min_training_samples:
+            logger.warning(
+                f"훈련 데이터 부족: {len(self.training_features)} < "
+                f"{self.min_training_samples}"
+            )
             return False
 
         try:
             features_array = np.array(self.training_features)
 
             # NaN, Inf 제거
-            valid_mask = ~(np.isnan(features_array).any(axis=1) | np.isinf(features_array).any(axis=1))
+            valid_mask = ~(np.isnan(features_array).any(axis=1) |
+                           np.isinf(features_array).any(axis=1))
+            invalid_count = int((~valid_mask).sum())
             features_array = features_array[valid_mask]
+            if invalid_count > 0:
+                logger.warning(f"NaN/Inf 특징 {invalid_count}개 제거됨")
 
-            if len(features_array) < 50:
+            if len(features_array) < self.min_training_samples:
+                logger.warning("유효한 특징 부족")
                 return False
 
-            # 정상 패턴 학습
-            self.normal_mean = np.mean(features_array, axis=0)
-            self.normal_std = np.std(features_array, axis=0)
+            # train/val 분할
+            rng = np.random.default_rng(42)
+            indices = rng.permutation(len(features_array))
+            features_array = features_array[indices]
+
+            val_ratio = max(0.0, min(0.5, self.validation_split))
+            val_size = int(len(features_array) * val_ratio)
+            val_features = features_array[:val_size] if val_size > 0 else None
+            train_features = features_array[val_size:] if val_size > 0 else features_array
+
+            # 정상 패턴 학습 (train 데이터만)
+            self.normal_mean = np.mean(train_features, axis=0)
+            self.normal_std = np.std(train_features, axis=0)
             self.is_trained = True
 
+            # 검증 메트릭: val 셋의 평균 Z-score 분포
+            if val_features is not None and len(val_features) > 0:
+                z = np.abs((val_features - self.normal_mean) /
+                           (self.normal_std + 1e-6))
+                self.training_metrics = {
+                    'train_size': int(len(train_features)),
+                    'val_size': int(len(val_features)),
+                    'val_mean_z': float(np.mean(z)),
+                    'val_max_z': float(np.max(z)),
+                }
+                logger.info(f"검증 메트릭: {self.training_metrics}")
+            else:
+                self.training_metrics = {'train_size': int(len(train_features))}
+
+            logger.info(
+                f"SimpleAnomalyDetector 훈련 완료: train={len(train_features)}"
+            )
             return True
 
         except Exception as e:
+            logger.exception(f"훈련 중 오류: {e}")
             return False
 
     def detect_anomaly(self, features_window):
@@ -285,12 +318,11 @@ class SimpleAnomalyDetector:
 
             # Z-score 계산
             z_scores = np.abs((recent_features - self.normal_mean) / (self.normal_std + 1e-6))
-            max_z_score = np.max(z_scores)
             avg_z_score = np.mean(np.max(z_scores, axis=1))
 
             # 이상 점수 계산
-            anomaly_score = min(1.0, avg_z_score / 3.0)  # Z-score 3을 기준으로 정규화
-            is_anomaly = anomaly_score > 0.7
+            anomaly_score = min(1.0, avg_z_score / self.z_score_divisor)
+            is_anomaly = anomaly_score > self.z_score_threshold
             confidence = 0.8
 
             return anomaly_score, is_anomaly, confidence
@@ -421,35 +453,52 @@ class YOLOAnomalyDetectionSystem:
                             default_config[key].update(value)
                         else:
                             default_config[key] = value
-            except Exception as e:
-                print(f"설정 파일 로드 실패: {e}")
+                    else:
+                        default_config[key] = value
+            except (OSError, json.JSONDecodeError) as e:
+                _bootstrap_logger.error(f"설정 파일 로드 실패({config_path}): {e}")
 
         return default_config
 
     def _setup_logging(self):
         """로깅 설정"""
-        log_level = getattr(logging, self.config['system']['log_level'].upper(), logging.INFO)
+        log_level = getattr(logging, self.config['system']['log_level'].upper(),
+                            logging.INFO)
 
         log_dir = Path(self.config['output']['log_directory'])
         log_dir.mkdir(exist_ok=True)
 
-        logging.basicConfig(
-            level=log_level,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_dir / 'system.log'),
-                logging.StreamHandler()
-            ]
+        root_logger = logging.getLogger()
+        root_logger.setLevel(log_level)
+
+        # 이미 설정된 핸들러 중복 방지
+        existing_types = {type(h) for h in root_logger.handlers}
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
+
+        if logging.FileHandler not in existing_types:
+            file_handler = logging.FileHandler(log_dir / 'system.log')
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+
+        if logging.StreamHandler not in existing_types:
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            root_logger.addHandler(stream_handler)
 
     def _create_detector(self):
         """검출기 생성"""
+        gpu_cache_interval = self.config.get('performance', {}).get(
+            'gpu_cache_clear_interval', 100)
+
         if YOLODetector is not None:
             try:
                 return YOLODetector(
                     model_path=self.model_path,
                     device=self.device,
-                    confidence_threshold=self.config['system']['confidence_threshold']
+                    confidence_threshold=self.config['system']['confidence_threshold'],
+                    gpu_cache_clear_interval=gpu_cache_interval
                 )
             except Exception as e:
                 self.logger.warning(f"YOLO 검출기 생성 실패, 간단한 검출기 사용: {e}")
@@ -462,18 +511,21 @@ class YOLOAnomalyDetectionSystem:
 
     def _create_tracker(self):
         """추적기 생성"""
+        tr_cfg = self.config['tracking']
+
         if PersonTracker is not None:
             try:
                 return PersonTracker(
-                    max_disappeared=self.config['tracking']['max_disappeared'],
-                    max_distance=self.config['tracking']['max_distance']
+                    max_disappeared=tr_cfg['max_disappeared'],
+                    max_distance=tr_cfg['max_distance'],
+                    use_hungarian=tr_cfg.get('use_hungarian', True)
                 )
             except Exception as e:
                 self.logger.warning(f"추적기 생성 실패, 간단한 추적기 사용: {e}")
 
         return SimpleTracker(
-            max_disappeared=self.config['tracking']['max_disappeared'],
-            max_distance=self.config['tracking']['max_distance']
+            max_disappeared=tr_cfg['max_disappeared'],
+            max_distance=tr_cfg['max_distance']
         )
 
     def _create_feature_extractor(self):
@@ -488,18 +540,29 @@ class YOLOAnomalyDetectionSystem:
 
     def _create_anomaly_detector(self):
         """이상 검출기 생성"""
+        ad_cfg = self.config['anomaly_detection']
+        random_seed = self.config.get('system', {}).get('random_seed', 42)
+
         if AnomalyDetector is not None:
             try:
                 return AnomalyDetector(
-                    window_size=self.config['anomaly_detection']['window_size'],
-                    contamination=self.config['anomaly_detection']['contamination']
+                    window_size=ad_cfg['window_size'],
+                    contamination=ad_cfg['contamination'],
+                    algorithm=ad_cfg.get('algorithm', 'isolation_forest'),
+                    anomaly_ratio_threshold=ad_cfg.get('anomaly_ratio_threshold', 0.3),
+                    validation_split=ad_cfg.get('validation_split', 0.2),
+                    min_training_samples=ad_cfg.get('min_training_samples', 100),
+                    random_seed=random_seed
                 )
             except Exception as e:
                 self.logger.warning(f"이상 검출기 생성 실패, 간단한 검출기 사용: {e}")
 
         return SimpleAnomalyDetector(
-            window_size=self.config['anomaly_detection']['window_size'],
-            contamination=self.config['anomaly_detection']['contamination']
+            window_size=ad_cfg['window_size'],
+            contamination=ad_cfg['contamination'],
+            z_score_threshold=ad_cfg.get('simple_z_score_threshold', 0.7),
+            z_score_divisor=ad_cfg.get('simple_z_score_divisor', 3.0),
+            validation_split=ad_cfg.get('validation_split', 0.2)
         )
 
     def add_alert_callback(self, callback):
@@ -546,16 +609,26 @@ class YOLOAnomalyDetectionSystem:
 
                             if not np.any(np.isnan(features)) and not np.any(np.isinf(features)):
                                 training_features.append(features)
+                            else:
+                                self.logger.debug(
+                                    f"특징 NaN/Inf 감지 - person_id={person_id}, "
+                                    f"frame={frame_count}"
+                                )
 
-                        except Exception as e:
+                        except (ValueError, ZeroDivisionError, TypeError) as e:
+                            self.logger.warning(
+                                f"특징 추출 실패 person={person_id}: {e}"
+                            )
                             continue
 
                 frame_count += 1
                 if frame_count % 100 == 0:
-                    self.logger.info(f"처리 프레임: {frame_count}, 특징: {len(training_features)}")
+                    self.logger.info(
+                        f"처리 프레임: {frame_count}, 특징: {len(training_features)}"
+                    )
 
-        except Exception as e:
-            self.logger.error(f"훈련 중 오류: {e}")
+        except (cv2.error, OSError) as e:
+            self.logger.exception(f"비디오 I/O 오류: {e}")
             return False
 
         finally:
@@ -605,6 +678,9 @@ class YOLOAnomalyDetectionSystem:
                 )
 
                 if np.any(np.isnan(features)) or np.any(np.isinf(features)):
+                    self.logger.debug(
+                        f"특징 NaN/Inf - person={person_id}, frame={frame_number}"
+                    )
                     continue
 
                 obj_data['features'].append({
@@ -613,22 +689,29 @@ class YOLOAnomalyDetectionSystem:
                     'timestamp': time.time()
                 })
 
-                if self.anomaly_detector.is_trained and len(obj_data['features']) >= self.anomaly_detector.window_size:
+                if (self.anomaly_detector.is_trained
+                        and len(obj_data['features']) >= self.anomaly_detector.window_size):
                     feature_window = [f['features'] for f in obj_data['features']]
-                    anomaly_score, is_anomaly, confidence = self.anomaly_detector.detect_anomaly(feature_window)
+                    anomaly_score, is_anomaly, confidence = \
+                        self.anomaly_detector.detect_anomaly(feature_window)
+                else:
+                    anomaly_score, is_anomaly, confidence = 0.0, False, 0.0
 
-                    anomaly_results[person_id] = {
-                        'bbox': bbox,
-                        'center': obj_data['centroid'],
-                        'anomaly_score': anomaly_score,
-                        'is_anomaly': is_anomaly,
-                        'confidence': confidence
-                    }
+                anomaly_results[person_id] = {
+                    'bbox': bbox,
+                    'center': obj_data['centroid'],
+                    'anomaly_score': anomaly_score,
+                    'is_anomaly': is_anomaly,
+                    'confidence': confidence,
+                }
 
-                    if is_anomaly:
-                        self.stats['anomaly_count'] += 1
+                if is_anomaly:
+                    self.stats['anomaly_count'] += 1
 
-            except Exception as e:
+            except (ValueError, TypeError, ZeroDivisionError) as e:
+                self.logger.warning(
+                    f"프레임 처리 실패 person={person_id}, frame={frame_number}: {e}"
+                )
                 continue
 
         processing_time = time.time() - start_time
@@ -986,15 +1069,13 @@ def main():
                   f"{final_stats['total_anomalies']}회 이상행동")
 
     except KeyboardInterrupt:
-        print("\n사용자에 의해 중단됨")
+        logging.getLogger(__name__).info("사용자에 의해 중단됨")
 
     except Exception as e:
-        print(f"오류 발생: {e}")
-        import traceback
-        traceback.print_exc()
+        logging.getLogger(__name__).exception(f"치명적 오류: {e}")
 
     finally:
-        print("프로그램 종료")
+        logging.getLogger(__name__).info("프로그램 종료")
 
 
 if __name__ == "__main__":

@@ -10,12 +10,24 @@ import argparse
 import os
 from pathlib import Path
 
+
+def _open_writer(output_path, fps, size):
+    """브라우저 호환(H.264/avc1) 우선, 실패 시 mp4v로 폴백"""
+    for codec in ('avc1', 'H264', 'mp4v'):
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        writer = cv2.VideoWriter(str(output_path), fourcc, fps, size)
+        if writer.isOpened():
+            print(f"   codec={codec}")
+            return writer
+        writer.release()
+    raise RuntimeError(f"VideoWriter 열기 실패: {output_path}")
+
+
 def create_normal_behavior_video(output_path, duration=60, fps=30):
     """정상 행동 패턴 비디오 생성"""
     print(f"📹 정상 행동 비디오 생성: {output_path}")
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (640, 480))
+
+    out = _open_writer(output_path, fps, (640, 480))
     
     total_frames = duration * fps
     
@@ -62,9 +74,8 @@ def create_normal_behavior_video(output_path, duration=60, fps=30):
 def create_anomaly_behavior_video(output_path, duration=30, fps=30):
     """이상 행동 패턴 비디오 생성"""
     print(f"🚨 이상 행동 비디오 생성: {output_path}")
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (640, 480))
+
+    out = _open_writer(output_path, fps, (640, 480))
     
     total_frames = duration * fps
     
@@ -131,9 +142,8 @@ def create_anomaly_behavior_video(output_path, duration=30, fps=30):
 def create_mixed_behavior_video(output_path, duration=90, fps=30):
     """정상+이상 혼합 비디오 생성"""
     print(f"🎭 혼합 행동 비디오 생성: {output_path}")
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (640, 480))
+
+    out = _open_writer(output_path, fps, (640, 480))
     
     total_frames = duration * fps
     
@@ -236,8 +246,8 @@ def main():
     
     if args.type in ['mixed', 'all']:
         create_mixed_behavior_video(
-            output_dir / 'mixed_behavior.mp4', 
-            args.duration * 1.5, args.fps
+            output_dir / 'mixed_behavior.mp4',
+            int(args.duration * 1.5), args.fps
         )
     
     print("\n🎉 테스트 비디오 생성 완료!")

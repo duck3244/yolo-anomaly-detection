@@ -182,8 +182,17 @@ def load_detection_results(input_path):
     return data['results']
 
 
-def create_performance_report(stats, output_path):
-    """성능 리포트 생성"""
+def create_performance_report(stats, output_path, evaluation_metrics=None):
+    """성능 리포트 생성
+
+    Args:
+        stats (dict): 시스템 통계
+        output_path (str): 출력 파일 경로
+        evaluation_metrics (dict, optional): precision/recall/f1 등 분류 지표
+    """
+    ad_stats = stats.get('anomaly_detector_stats', {}) or {}
+    training_metrics = ad_stats.get('training_metrics', {})
+
     report = {
         'generated_at': datetime.now().isoformat(),
         'summary': {
@@ -194,13 +203,15 @@ def create_performance_report(stats, output_path):
             'total_anomalies': stats.get('total_anomalies', 0),
             'anomaly_rate': stats.get('anomaly_rate', 0)
         },
+        'training_metrics': training_metrics,
+        'evaluation_metrics': evaluation_metrics or {},
         'detailed_stats': stats
     }
 
     with open(output_path, 'w') as f:
-        json.dump(report, f, indent=2)
+        json.dump(report, f, indent=2, default=str)
 
-    print(f"✅ 성능 리포트 생성: {output_path}")
+    logging.getLogger(__name__).info(f"성능 리포트 생성: {output_path}")
 
 
 def plot_statistics(stats, save_path=None):
@@ -251,7 +262,7 @@ def plot_statistics(stats, save_path=None):
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"✅ 통계 그래프 저장: {save_path}")
+        logging.getLogger(__name__).info(f"통계 그래프 저장: {save_path}")
 
     plt.show()
 

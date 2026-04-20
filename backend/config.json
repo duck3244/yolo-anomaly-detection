@@ -31,8 +31,16 @@
     "show_score": true,
     "show_bbox": true,
     "show_confidence": true,
-    "anomaly_color": [0, 0, 255],
-    "normal_color": [0, 255, 0],
+    "anomaly_color": [
+      0,
+      0,
+      255
+    ],
+    "normal_color": [
+      0,
+      255,
+      0
+    ],
     "font_scale": 0.6,
     "thickness": 2
   },

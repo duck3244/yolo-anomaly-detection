@@ -151,3 +151,23 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 *.mp4
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# YOLO / 모델 가중치 (자동 다운로드되거나 런타임에 생성)
+*.pt
+*.pth
+*.onnx
+*.pkl
+backend/models/
+backend/yolov8n.pt
+
+# 런타임 산출물
+backend/logs/
+backend/output/
+test_videos/
+*.bak
+*.tmp

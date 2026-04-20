@@ -3,26 +3,42 @@ person_tracker.py
 사람 객체 추적을 담당하는 모듈
 """
 
+import logging
 import numpy as np
 from collections import defaultdict, deque
 import time
 
+try:
+    from scipy.optimize import linear_sum_assignment
+    _HAS_SCIPY = True
+except ImportError:  # scipy 미설치 시 graceful fallback
+    linear_sum_assignment = None
+    _HAS_SCIPY = False
+
 class PersonTracker:
     """간단한 사람 추적기 (DeepSORT 대신 centroid tracking 사용)"""
     
-    def __init__(self, max_disappeared=10, max_distance=100):
+    def __init__(self, max_disappeared=10, max_distance=100, use_hungarian=True):
         """
         추적기 초기화
-        
+
         Args:
             max_disappeared (int): 객체가 사라진 후 제거하기까지의 최대 프레임 수
             max_distance (int): 객체 매칭을 위한 최대 거리 (픽셀)
+            use_hungarian (bool): 헝가리안 알고리즘 사용 여부 (scipy 필요)
         """
         self.next_object_id = 0
         self.objects = {}
         self.disappeared = {}
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
+        self.use_hungarian = use_hungarian and _HAS_SCIPY
+        self.logger = logging.getLogger(__name__)
+
+        if use_hungarian and not _HAS_SCIPY:
+            self.logger.warning(
+                "scipy 미설치로 헝가리안 알고리즘 사용 불가, greedy fallback"
+            )
 
     def register(self, centroid, bbox):
         """새로운 객체 등록"""
@@ -88,55 +104,79 @@ class PersonTracker:
         return self.objects
 
     def _match_objects(self, input_centroids, input_bboxes, current_time):
-        """기존 객체와 새로운 검출 결과 매칭"""
+        """기존 객체와 새로운 검출 결과 매칭 (헝가리안 또는 greedy)"""
         object_centroids = [obj['centroid'] for obj in self.objects.values()]
         object_ids = list(self.objects.keys())
 
-        # 거리 행렬 계산
+        # 거리 행렬 계산 (rows=기존, cols=검출)
         D = np.linalg.norm(
-            np.array(object_centroids)[:, np.newaxis] - 
+            np.array(object_centroids)[:, np.newaxis] -
             np.array(input_centroids), axis=2
         )
 
-        # 간단한 탐욕적 매칭 (헝가리안 알고리즘 대신)
-        rows = D.min(axis=1).argsort()
-        cols = D.argmin(axis=1)[rows]
+        used_row_indices, used_col_indices = self._solve_assignment(D, object_ids,
+                                                                   input_centroids,
+                                                                   input_bboxes,
+                                                                   current_time)
 
+        # 매칭되지 않은 기존/검출 인덱스
+        unused_row_indices = set(range(D.shape[0])) - used_row_indices
+        unused_col_indices = set(range(D.shape[1])) - used_col_indices
+
+        # 사라진 객체 처리
+        for row in unused_row_indices:
+            object_id = object_ids[row]
+            self.disappeared[object_id] += 1
+            if self.disappeared[object_id] > self.max_disappeared:
+                self.deregister(object_id)
+
+        # 새로 등장한 객체 등록
+        for col in unused_col_indices:
+            self.register(input_centroids[col], input_bboxes[col])
+
+    def _solve_assignment(self, D, object_ids, input_centroids, input_bboxes,
+                          current_time):
+        """할당 문제 풀이: 헝가리안 또는 greedy"""
         used_row_indices = set()
         used_col_indices = set()
 
-        # 매칭된 객체들 업데이트
-        for (row, col) in zip(rows, cols):
-            if row in used_row_indices or col in used_col_indices:
-                continue
+        if D.size == 0:
+            return used_row_indices, used_col_indices
 
-            if D[row, col] > self.max_distance:
-                continue
-
-            object_id = object_ids[row]
-            self.objects[object_id]['centroid'] = input_centroids[col]
-            self.objects[object_id]['bbox'] = input_bboxes[col]
-            self.objects[object_id]['last_seen'] = current_time
-            self.disappeared[object_id] = 0
-
-            used_row_indices.add(row)
-            used_col_indices.add(col)
-
-        # 매칭되지 않은 기존 객체들 처리
-        unused_row_indices = set(range(0, D.shape[0])) - used_row_indices
-        unused_col_indices = set(range(0, D.shape[1])) - used_col_indices
-
-        if D.shape[0] >= D.shape[1]:
-            # 사라진 객체들 처리
-            for row in unused_row_indices:
-                object_id = object_ids[row]
-                self.disappeared[object_id] += 1
-                if self.disappeared[object_id] > self.max_disappeared:
-                    self.deregister(object_id)
+        if self.use_hungarian:
+            # scipy 헝가리안 알고리즘 - 전역 최적 매칭
+            row_ind, col_ind = linear_sum_assignment(D)
+            for row, col in zip(row_ind, col_ind):
+                if D[row, col] > self.max_distance:
+                    continue
+                self._apply_match(row, col, object_ids, input_centroids,
+                                  input_bboxes, current_time)
+                used_row_indices.add(row)
+                used_col_indices.add(col)
         else:
-            # 새로운 객체들 등록
-            for col in unused_col_indices:
-                self.register(input_centroids[col], input_bboxes[col])
+            # 기존 greedy fallback
+            rows = D.min(axis=1).argsort()
+            cols = D.argmin(axis=1)[rows]
+            for row, col in zip(rows, cols):
+                if row in used_row_indices or col in used_col_indices:
+                    continue
+                if D[row, col] > self.max_distance:
+                    continue
+                self._apply_match(row, col, object_ids, input_centroids,
+                                  input_bboxes, current_time)
+                used_row_indices.add(row)
+                used_col_indices.add(col)
+
+        return used_row_indices, used_col_indices
+
+    def _apply_match(self, row, col, object_ids, input_centroids, input_bboxes,
+                     current_time):
+        """단일 매칭 적용"""
+        object_id = object_ids[row]
+        self.objects[object_id]['centroid'] = input_centroids[col]
+        self.objects[object_id]['bbox'] = input_bboxes[col]
+        self.objects[object_id]['last_seen'] = current_time
+        self.disappeared[object_id] = 0
 
     def get_object_info(self, object_id):
         """특정 객체의 상세 정보 반환"""

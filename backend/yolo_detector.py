@@ -13,28 +13,34 @@ import time
 
 class YOLODetector:
     """YOLO 기반 객체 검출기"""
-    
-    def __init__(self, model_path='yolov8n.pt', device='cpu', confidence_threshold=0.5):
+
+    def __init__(self, model_path='yolov8n.pt', device='cpu',
+                 confidence_threshold=0.5, gpu_cache_clear_interval=100):
         """
         YOLO 검출기 초기화
-        
+
         Args:
             model_path (str): YOLO 모델 경로
             device (str): 사용할 디바이스 ('cpu', 'cuda', 'mps')
             confidence_threshold (float): 검출 신뢰도 임계값
+            gpu_cache_clear_interval (int): GPU 캐시 정리 주기 (추론 횟수 기준, 0=비활성)
         """
+        # 로거는 _load_model() 보다 먼저 준비되어야 한다
+        self.logger = logging.getLogger(__name__)
+
         self.model_path = model_path
         self.device = device
         self.confidence_threshold = confidence_threshold
-        
+        self.gpu_cache_clear_interval = gpu_cache_clear_interval
+
         # YOLO 모델 로드
         self.model = None
         self._load_model()
-        
+
         # COCO 클래스 정보
         self.person_class_id = 0  # COCO dataset에서 사람 클래스 ID
         self.class_names = self._get_class_names()
-        
+
         # 성능 통계
         self.stats = {
             'total_inferences': 0,
@@ -42,9 +48,6 @@ class YOLODetector:
             'avg_inference_time': 0,
             'inference_times': []
         }
-        
-        # 로깅
-        self.logger = logging.getLogger(__name__)
     
     def _load_model(self):
         """YOLO 모델 로드"""
@@ -93,23 +96,25 @@ class YOLODetector:
             return []
         
         start_time = time.time()
-        
+
         try:
-            # YOLO 추론 수행
-            results = self.model(frame, verbose=False, conf=self.confidence_threshold)
-            
+            # YOLO 추론 수행 (gradient 비활성으로 메모리 절약)
+            with torch.inference_mode():
+                results = self.model(frame, verbose=False,
+                                     conf=self.confidence_threshold)
+
             inference_time = time.time() - start_time
             self._update_stats(inference_time)
-            
+
             detections = []
-            
+
             for result in results:
                 boxes = result.boxes
                 if boxes is not None:
                     for box in boxes:
                         class_id = int(box.cls[0])
                         confidence = float(box.conf[0])
-                        
+
                         # 사람 클래스만 필터링
                         if class_id == self.person_class_id:
                             # 바운딩 박스 좌표 추출
@@ -156,22 +161,24 @@ class YOLODetector:
             return []
         
         start_time = time.time()
-        
+
         try:
-            results = self.model(frame, verbose=False, conf=self.confidence_threshold)
-            
+            with torch.inference_mode():
+                results = self.model(frame, verbose=False,
+                                     conf=self.confidence_threshold)
+
             inference_time = time.time() - start_time
             self._update_stats(inference_time)
-            
+
             detections = []
-            
+
             for result in results:
                 boxes = result.boxes
                 if boxes is not None:
                     for box in boxes:
                         class_id = int(box.cls[0])
                         confidence = float(box.conf[0])
-                        
+
                         # 클래스 필터링
                         if filter_classes is None or class_id in filter_classes:
                             xyxy = box.xyxy[0].cpu().numpy()
@@ -214,10 +221,12 @@ class YOLODetector:
             
             try:
                 start_time = time.time()
-                
+
                 # 배치 추론
-                results = self.model(batch_frames, verbose=False, conf=self.confidence_threshold)
-                
+                with torch.inference_mode():
+                    results = self.model(batch_frames, verbose=False,
+                                         conf=self.confidence_threshold)
+
                 inference_time = time.time() - start_time
                 self._update_stats(inference_time / len(batch_frames))  # 프레임당 시간
                 
@@ -255,13 +264,37 @@ class YOLODetector:
         """성능 통계 업데이트"""
         self.stats['total_inferences'] += 1
         self.stats['inference_times'].append(inference_time)
-        
+
         # 최근 100개 추론 시간만 유지
         if len(self.stats['inference_times']) > 100:
             self.stats['inference_times'].pop(0)
-        
+
         # 평균 추론 시간 계산
         self.stats['avg_inference_time'] = np.mean(self.stats['inference_times'])
+
+        # 주기적 GPU 캐시 해제
+        if (self.gpu_cache_clear_interval > 0
+                and self.stats['total_inferences'] % self.gpu_cache_clear_interval == 0):
+            self._clear_gpu_cache()
+
+    def _clear_gpu_cache(self):
+        """CUDA 사용 시 메모리 캐시 해제"""
+        try:
+            if self.device == 'cuda' and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            self.logger.warning(f"GPU 캐시 정리 실패: {e}")
+
+    def release(self):
+        """모델 및 GPU 자원 해제"""
+        try:
+            self._clear_gpu_cache()
+            self.model = None
+            if self.device == 'cuda' and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            self.logger.info("YOLO 리소스 해제 완료")
+        except Exception as e:
+            self.logger.warning(f"리소스 해제 중 오류: {e}")
     
     def get_performance_stats(self):
         """성능 통계 반환"""
